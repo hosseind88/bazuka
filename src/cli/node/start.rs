@@ -9,6 +9,8 @@ pub async fn start(
     client_only: bool,
     conf: &BazukaConfig,
     wallet: &Wallet,
+    dev: bool,
+    dev_address: &str
 ) {
     run_node(
         conf.clone(),
@@ -17,6 +19,8 @@ pub async fn start(
             discord: discord_handle,
         },
         client_only,
+        dev,
+        dev_address
     )
     .await;
 }

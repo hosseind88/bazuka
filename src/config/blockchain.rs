@@ -142,6 +142,103 @@ fn get_ziesha_token_creation_tx() -> Transaction {
     }
 }
 
+pub fn get_dev_blockchain_config(address: &str) -> BlockchainConfig {
+    let mpn_tx_delta = get_mpn_contract(
+        MPN_LOG4_TOKENS_TREE_SIZE,
+        MPN_LOG4_DEPOSIT_BATCH_SIZE,
+        MPN_LOG4_WITHDRAW_BATCH_SIZE,
+    );
+    let mpn_contract_id = ContractId::new(&mpn_tx_delta.tx);
+
+    let ziesha_token_creation_tx = get_ziesha_token_creation_tx();
+    let ziesha_token_id = TokenId::new(&ziesha_token_creation_tx);
+
+    let create_staker = Transaction {
+        memo: "Very first staker created!".into(),
+        src: Some(address.parse().unwrap()),
+        data: TransactionData::UpdateStaker {
+            vrf_pub_key: "vrfec707f8ab27ab5fe217eae8932c840393e2cfab3dfaf79d53a88e1ac4ae4c255"
+                .parse()
+                .unwrap(),
+        },
+        nonce: 1,
+        fee: Money::ziesha(0),
+        sig: Signature::Unsigned,
+    };
+    let delegate_to_staker = Transaction {
+        memo: "Very first delegation!".into(),
+        src: None,
+        data: TransactionData::Delegate {
+            to: address.parse().unwrap(),
+            amount: Amount(1000000000000),
+            reverse: false,
+        },
+        nonce: 3,
+        fee: Money::ziesha(0),
+        sig: Signature::Unsigned,
+    };
+
+    let blk = Block {
+        header: Header {
+            parent_hash: Default::default(),
+            number: 0,
+            block_root: Default::default(),
+            proof_of_stake: ProofOfStake {
+                timestamp: 0,
+                validator: Default::default(),
+                proof: ValidatorProof::Unproven,
+            },
+        },
+        body: vec![
+            ziesha_token_creation_tx,
+            mpn_tx_delta.tx,
+            create_staker,
+            delegate_to_staker,
+        ],
+    };
+
+    BlockchainConfig {
+        limited_miners: None,
+        mpn_config: MpnConfig {
+            mpn_contract_id,
+            log4_tree_size: MPN_LOG4_TREE_SIZE,
+            log4_token_tree_size: MPN_LOG4_TOKENS_TREE_SIZE,
+            log4_deposit_batch_size: MPN_LOG4_DEPOSIT_BATCH_SIZE,
+            log4_withdraw_batch_size: MPN_LOG4_WITHDRAW_BATCH_SIZE,
+            log4_update_batch_size: MPN_LOG4_UPDATE_BATCH_SIZE,
+            mpn_num_update_batches: 1,
+            mpn_num_deposit_batches: 1,
+            mpn_num_withdraw_batches: 1,
+            deposit_vk: MPN_DEPOSIT_VK.clone(),
+            withdraw_vk: MPN_WITHDRAW_VK.clone(),
+            update_vk: MPN_UPDATE_VK.clone(),
+        },
+
+        ziesha_token_id,
+        genesis: BlockAndPatch {
+            block: blk,
+            patch: ZkBlockchainPatch {
+                patches: [(
+                    mpn_contract_id,
+                    zk::ZkStatePatch::Delta(mpn_tx_delta.state_delta.unwrap()),
+                )]
+                .into_iter()
+                .collect(),
+            },
+        },
+        reward_ratio: 100_000, // 1/100_000 -> 0.01% of Treasury Supply per block
+        max_block_size: MB as usize,
+        max_delta_count: 1024, // Only allow max of 1024 ZkScalar cells to be added per block
+
+        testnet_height_limit: Some(TESTNET_HEIGHT_LIMIT),
+        max_memo_length: 64,
+        slot_duration: 60,
+        slot_per_epoch: 10,
+        chain_start_timestamp: CHAIN_START_TIMESTAMP,
+        check_validator: true,
+    }
+}
+
 pub fn get_blockchain_config() -> BlockchainConfig {
     let mpn_tx_delta = get_mpn_contract(
         MPN_LOG4_TOKENS_TREE_SIZE,

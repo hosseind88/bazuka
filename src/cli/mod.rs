@@ -4,6 +4,8 @@ use {
     crate::client::{messages::SocialProfiles, Limit, NodeRequest},
     crate::common::*,
     crate::db::LevelDbKvStore,
+    crate::db::RamKvStore,
+    crate::db::KvStore,
     crate::node::{node_create, Firewall},
     hyper::server::conn::AddrStream,
     hyper::service::{make_service_fn, service_fn},
@@ -152,6 +154,10 @@ enum NodeCliOptions {
         client_only: bool,
         #[structopt(long)]
         discord_handle: Option<String>,
+        #[structopt(long)]
+        dev: bool,
+        #[structopt(long)]
+        dev_address: String,
     },
     /// Get status of a node
     Status {},
@@ -204,12 +210,19 @@ enum CliOptions {
     Chain(ChainCliOptions),
 }
 
+enum KvStoreEnum {
+    RamKvStore(RamKvStore),
+    LevelDbKvStore(LevelDbKvStore)
+}
+
 #[cfg(feature = "node")]
 async fn run_node(
     bazuka_config: BazukaConfig,
     wallet: Wallet,
     social_profiles: SocialProfiles,
     client_only: bool,
+    dev: bool,
+    dev_address: &str
 ) -> Result<(), NodeError> {
     let address = if client_only {
         None
@@ -253,6 +266,21 @@ async fn run_node(
     let bootstrap_nodes = bazuka_config.bootstrap.clone();
 
     let bazuka_dir = bazuka_config.db.clone();
+    let blockchain_config = if dev {
+        config::blockchain::get_dev_blockchain_config(dev_address)
+    } else {
+        config::blockchain::get_blockchain_config()
+    };
+    let database = if dev {
+        KvStoreEnum::RamKvStore(RamKvStore::new())
+    } else {
+        KvStoreEnum::LevelDbKvStore(LevelDbKvStore::new(&bazuka_dir, 64).unwrap())
+    };
+    let database = match database {
+        KvStoreEnum::RamKvStore(store) => Box::new(store) as Box<dyn KvStore>,
+        KvStoreEnum::LevelDbKvStore(store) => Box::new(store) as Box<dyn KvStore>,
+    };
+
 
     // 60 request per minute / 4GB per 15min
     let firewall = Firewall::new(360, 4 * GB);
@@ -265,8 +293,8 @@ async fn run_node(
         address,
         bootstrap_nodes,
         KvStoreChain::new(
-            LevelDbKvStore::new(&bazuka_dir, 64).unwrap(),
-            config::blockchain::get_blockchain_config(),
+            *database,
+            blockchain_config,
         )
         .unwrap(),
         0,
@@ -417,12 +445,16 @@ pub async fn initialize_cli() {
             NodeCliOptions::Start {
                 discord_handle,
                 client_only,
+                dev,
+                dev_address
             } => {
                 crate::cli::node::start(
                     discord_handle,
                     client_only,
                     &conf.expect(BAZUKA_NOT_INITILIZED),
                     &wallet.expect(BAZUKA_NOT_INITILIZED),
+                    dev,
+                    &dev_address
                 )
                 .await;
             }
