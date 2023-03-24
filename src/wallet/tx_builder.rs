@@ -53,6 +53,11 @@ impl TxBuilder {
     pub fn get_zk_address(&self) -> <ZkSigner as ZkSignatureScheme>::Pub {
         self.zk_address.clone()
     }
+    pub fn get_mpn_address(&self) -> MpnAddress {
+        MpnAddress {
+            pub_key: self.get_zk_address(),
+        }
+    }
     pub fn sign(&self, bytes: &[u8]) -> <Signer as SignatureScheme>::Sig {
         Signer::sign(&self.private_key, bytes)
     }
@@ -105,12 +110,19 @@ impl TxBuilder {
             format!("{}-{}", epoch, slot).as_bytes(),
         )
     }
-    pub fn register_validator(&self, memo: String, fee: Money, nonce: u32) -> TransactionAndDelta {
+    pub fn register_validator(
+        &self,
+        memo: String,
+        commision: u8,
+        fee: Money,
+        nonce: u32,
+    ) -> TransactionAndDelta {
         let mut tx = Transaction {
             memo,
             src: Some(self.get_address()),
             data: TransactionData::UpdateStaker {
                 vrf_pub_key: self.vrf_public_key.clone(),
+                commision,
             },
             nonce,
             fee,

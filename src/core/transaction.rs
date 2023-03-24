@@ -184,6 +184,12 @@ where
     pub fn zk_address_index(&self, log4_account_capacity: u8) -> u64 {
         self.zk_address.mpn_account_index(log4_account_capacity)
     }
+    pub fn verify_calldata<ZH: ZkHasher>(&self) -> bool {
+        let mut preimage: Vec<ZkScalar> = self.zk_address.clone().into();
+        preimage.push(self.zk_nonce.clone().into());
+        preimage.extend(&self.zk_sig.clone().into());
+        self.payment.calldata == ZH::hash(&preimage)
+    }
     pub fn verify_signature<ZH: ZkHasher>(&self) -> bool {
         let msg = ZH::hash(&[
             self.payment.fingerprint(),
@@ -268,8 +274,8 @@ impl<S: SignatureScheme> Token<S> {
         const MIN_SYMBOL_LEN: usize = 3;
         const MAX_SYMBOL_LEN: usize = 6;
         lazy_static! {
-            static ref RE_NAME: Regex = Regex::new(r"(?:[a-zA-Z0-9]+ )*[a-zA-Z0-9]+").unwrap();
-            static ref RE_SYMBOL: Regex = Regex::new(r"[A-Z][A-Z0-9]*").unwrap();
+            static ref RE_NAME: Regex = Regex::new(r"^(?:[a-zA-Z0-9]+ )*[a-zA-Z0-9]+$").unwrap();
+            static ref RE_SYMBOL: Regex = Regex::new(r"^[A-Z][A-Z0-9]*$").unwrap();
         }
         self.name.len() >= MIN_NAME_LEN
             && self.name.len() <= MAX_NAME_LEN
@@ -292,6 +298,7 @@ pub enum TokenUpdate<S: SignatureScheme> {
 pub enum TransactionData<H: Hash, S: SignatureScheme, V: VerifiableRandomFunction> {
     UpdateStaker {
         vrf_pub_key: V::Pub,
+        commision: u8, // n parts out of 255 parts
     },
     Delegate {
         amount: Amount,

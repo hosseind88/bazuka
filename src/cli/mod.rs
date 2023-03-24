@@ -18,10 +18,10 @@ use {
 use {
     crate::client::{NodeError, PeerAddress},
     crate::config,
-    crate::core::{Address, Amount, TokenId, ZieshaAddress},
-    crate::wallet::{TxBuilder, Wallet},
+    crate::core::{Address, Amount, MpnAddress, TokenId, ZieshaAddress},
+    crate::mpn::MpnWorker,
+    crate::wallet::WalletCollection,
     colored::Colorize,
-    rand::Rng,
     serde::{Deserialize, Serialize},
     std::net::SocketAddr,
     std::path::{Path, PathBuf},
@@ -31,23 +31,44 @@ use {
 
 pub mod chain;
 pub mod init;
-pub mod node;
 pub mod wallet;
 pub use init::*;
+
+#[cfg(feature = "node")]
+pub mod node;
 
 #[cfg(feature = "client")]
 const DEFAULT_PORT: u16 = 8765;
 const BAZUKA_NOT_INITILIZED: &str = "Bazuka is not initialized";
 
 #[cfg(feature = "client")]
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BazukaConfigMpnWorker {
+    mpn_address: String,
+}
+
+#[cfg(feature = "client")]
+#[derive(Debug)]
+pub struct InvalidMpnWorker;
+
+impl TryInto<MpnWorker> for BazukaConfigMpnWorker {
+    type Error = InvalidMpnWorker;
+    fn try_into(self) -> Result<MpnWorker, InvalidMpnWorker> {
+        Ok(MpnWorker {
+            mpn_address: self.mpn_address.parse().map_err(|_| InvalidMpnWorker)?,
+        })
+    }
+}
+
+#[cfg(feature = "client")]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BazukaConfig {
     listen: SocketAddr,
     external: PeerAddress,
     network: String,
-    miner_token: String,
     bootstrap: Vec<PeerAddress>,
     db: PathBuf,
+    mpn_workers: Vec<BazukaConfigMpnWorker>,
 }
 
 #[cfg(feature = "client")]
@@ -106,6 +127,8 @@ enum WalletOptions {
     RegisterValidator {
         #[structopt(long)]
         memo: Option<String>,
+        #[structopt(long)]
+        commision: f32,
         #[structopt(long, default_value = "0")]
         fee: Amount,
     },
@@ -161,11 +184,13 @@ enum NodeCliOptions {
     },
     /// Get status of a node
     Status {},
+    /// Add a new mpn worker
+    AddMpnWorker { mpn_address: MpnAddress },
 }
 
 #[derive(StructOpt)]
 #[allow(clippy::large_enum_variant)]
-#[cfg(feature = "node")]
+#[cfg(feature = "client")]
 enum ChainCliOptions {
     /// Rollback the blockchain
     Rollback {},
@@ -218,7 +243,7 @@ enum KvStoreEnum {
 #[cfg(feature = "node")]
 async fn run_node(
     bazuka_config: BazukaConfig,
-    wallet: Wallet,
+    wallet: WalletCollection,
     social_profiles: SocialProfiles,
     client_only: bool,
     dev: bool,
@@ -229,8 +254,6 @@ async fn run_node(
     } else {
         Some(bazuka_config.external)
     };
-
-    let wallet = TxBuilder::new(&wallet.seed());
 
     println!(
         "{} v{}",
@@ -243,22 +266,6 @@ async fn run_node(
         println!("{} {}", "Internet endpoint:".bright_yellow(), addr);
     }
     println!("{} {}", "Network:".bright_yellow(), bazuka_config.network);
-
-    println!(
-        "{} {}",
-        "Wallet address:".bright_yellow(),
-        wallet.get_address()
-    );
-    println!(
-        "{} {}",
-        "Wallet zk address:".bright_yellow(),
-        wallet.get_zk_address()
-    );
-    println!(
-        "{} {}",
-        "Miner token:".bright_yellow(),
-        bazuka_config.miner_token
-    );
 
     let (inc_send, inc_recv) = mpsc::unbounded_channel::<NodeRequest>();
     let (out_send, mut out_recv) = mpsc::unbounded_channel::<NodeRequest>();
@@ -298,12 +305,17 @@ async fn run_node(
         )
         .unwrap(),
         0,
-        wallet,
+        wallet.validator_builder(),
+        wallet.user_builder(0),
         social_profiles,
         inc_recv,
         out_send,
         Some(firewall),
-        Some(bazuka_config.miner_token.clone()),
+        bazuka_config
+            .mpn_workers
+            .iter()
+            .map(|w| w.clone().try_into().unwrap())
+            .collect(),
     );
 
     // Async loop that is responsible for getting incoming HTTP requests through a
@@ -376,19 +388,9 @@ async fn run_node(
     Ok(())
 }
 
-#[cfg(feature = "client")]
-fn generate_miner_token() -> String {
-    use rand::distributions::Alphanumeric;
-    rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(30)
-        .map(char::from)
-        .collect()
-}
-
-fn get_wallet() -> Option<Wallet> {
+fn get_wallet_collection() -> Option<WalletCollection> {
     let wallet_path = get_wallet_path();
-    let wallet = Wallet::open(wallet_path.clone()).unwrap();
+    let wallet = WalletCollection::open(wallet_path.clone()).unwrap();
     wallet
 }
 
@@ -415,20 +417,11 @@ pub async fn initialize_cli() {
 
     let conf_path = get_conf_path();
 
-    let mut conf = get_conf();
-
-    if let Some(ref mut conf) = &mut conf {
-        if conf.miner_token.is_empty() {
-            conf.miner_token = generate_miner_token();
-        }
-        std::fs::write(conf_path.clone(), serde_yaml::to_string(conf).unwrap()).unwrap();
-    }
     let conf = get_conf();
-    let wallet = get_wallet();
+    let wallet = get_wallet_collection();
     let wallet_path = get_wallet_path();
 
     match opts {
-        #[cfg(feature = "node")]
         CliOptions::Chain(chain_opts) => match chain_opts {
             ChainCliOptions::Rollback {} => {
                 crate::cli::chain::rollback(&conf.expect(BAZUKA_NOT_INITILIZED)).await;
@@ -459,7 +452,10 @@ pub async fn initialize_cli() {
                 .await;
             }
             NodeCliOptions::Status {} => {
-                crate::cli::node::status(get_conf(), get_wallet()).await;
+                crate::cli::node::status(get_conf(), get_wallet_collection()).await;
+            }
+            NodeCliOptions::AddMpnWorker { mpn_address } => {
+                crate::cli::node::add_mpn_worker(&conf_path, get_conf(), mpn_address).await;
             }
         },
         #[cfg(feature = "client")]
@@ -515,7 +511,7 @@ pub async fn initialize_cli() {
                     mintable,
                     fee,
                     get_conf(),
-                    get_wallet(),
+                    get_wallet_collection(),
                     &wallet_path,
                 )
                 .await;
@@ -544,12 +540,17 @@ pub async fn initialize_cli() {
             WalletOptions::Reset {} => {
                 crate::cli::wallet::reset(&mut wallet.expect(BAZUKA_NOT_INITILIZED), &wallet_path);
             }
-            WalletOptions::RegisterValidator { memo, fee } => {
+            WalletOptions::RegisterValidator {
+                memo,
+                commision,
+                fee,
+            } => {
                 crate::cli::wallet::register_validator(
                     memo,
+                    commision,
                     fee,
                     get_conf(),
-                    get_wallet(),
+                    get_wallet_collection(),
                     &get_wallet_path(),
                 )
                 .await;
@@ -569,7 +570,7 @@ pub async fn initialize_cli() {
                 crate::cli::wallet::resend_pending(fill_gaps, shift).await;
             }
             WalletOptions::Info {} => {
-                crate::cli::wallet::info(get_conf(), get_wallet()).await;
+                crate::cli::wallet::info(get_conf(), get_wallet_collection()).await;
             }
         },
     }

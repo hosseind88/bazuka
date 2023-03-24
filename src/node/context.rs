@@ -3,8 +3,8 @@ use super::{
 };
 use crate::blockchain::{BlockAndPatch, Blockchain, BlockchainError, Mempool};
 use crate::client::messages::{SocialProfiles, ValidatorClaim};
-use crate::core::{ChainSourcedTx, Header, MpnSourcedTx, TransactionAndDelta};
-use crate::mpn::MpnWorkPool;
+use crate::core::{ChainSourcedTx, Header, MpnAddress, MpnSourcedTx, TransactionAndDelta};
+use crate::mpn::{MpnWorkPool, MpnWorker};
 use crate::node::KvStore;
 use crate::utils;
 use crate::wallet::TxBuilder;
@@ -12,8 +12,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct NodeContext<K: KvStore, B: Blockchain<K>> {
-    pub miner_token: Option<String>,
-
     pub firewall: Option<Firewall>,
     pub social_profiles: SocialProfiles,
     pub opts: NodeOptions,
@@ -22,10 +20,13 @@ pub struct NodeContext<K: KvStore, B: Blockchain<K>> {
     pub shutdown: bool,
     pub outgoing: Arc<OutgoingSender>,
     pub blockchain: B,
-    pub wallet: TxBuilder,
+    pub validator_wallet: TxBuilder,
+    pub user_wallet: TxBuilder,
     pub peer_manager: PeerManager,
     pub timestamp_offset: i32,
     pub validator_claim: Option<ValidatorClaim>,
+
+    pub mpn_workers: HashMap<MpnAddress, MpnWorker>,
     pub mpn_work_pool: Option<MpnWorkPool>,
 
     pub mempool: Mempool,
@@ -60,7 +61,7 @@ impl<K: KvStore, B: Blockchain<K>> NodeContext<K, B> {
         Ok(self.address.map(|address| Peer {
             address,
             height,
-            pub_key: self.wallet.get_address(),
+            pub_key: self.validator_wallet.get_address(),
             outdated_states,
         }))
     }

@@ -1,10 +1,11 @@
 use crate::core::{
-    Address, Amount, Block, ContractDeposit, ContractUpdate, ContractWithdraw, Header, Money,
-    ProofOfStake, Token, TokenUpdate, Transaction, TransactionData,
+    Address, Amount, Block, ChainSourcedTx, ContractDeposit, ContractUpdate, ContractWithdraw,
+    Header, Money, MpnDeposit, MpnSourcedTx, MpnWithdraw, ProofOfStake, Token, TokenUpdate,
+    Transaction, TransactionData,
 };
 use crate::crypto::jubjub::*;
 use crate::zk::{
-    MpnAccount, ZkCompressedState, ZkContract, ZkMultiInputVerifierKey, ZkProof,
+    MpnAccount, MpnTransaction, ZkCompressedState, ZkContract, ZkMultiInputVerifierKey, ZkProof,
     ZkSingleInputVerifierKey, ZkStateModel, ZkVerifierKey,
 };
 use serde::{Deserialize, Serialize};
@@ -333,6 +334,7 @@ impl From<&ContractUpdate> for ExplorerContractUpdate {
 pub enum ExplorerTransactionData {
     UpdateStaker {
         vrf_pub_key: String,
+        commision: u8,
     },
     Delegate {
         to: String,
@@ -361,8 +363,12 @@ pub enum ExplorerTransactionData {
 impl From<&TransactionData> for ExplorerTransactionData {
     fn from(obj: &TransactionData) -> Self {
         match obj {
-            TransactionData::UpdateStaker { vrf_pub_key } => Self::UpdateStaker {
+            TransactionData::UpdateStaker {
+                vrf_pub_key,
+                commision,
+            } => Self::UpdateStaker {
                 vrf_pub_key: hex::encode(vrf_pub_key.as_ref()),
+                commision: *commision,
             },
             TransactionData::Delegate {
                 to,
@@ -449,6 +455,111 @@ impl From<&(Address, Amount)> for ExplorerStaker {
         Self {
             pub_key: obj.0.to_string(),
             stake: obj.1.into(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ExplorerMpnDeposit {
+    pub zk_address: String,
+    pub zk_token_index: u64,
+    pub payment: ExplorerContractDeposit,
+}
+
+impl From<&MpnDeposit> for ExplorerMpnDeposit {
+    fn from(obj: &MpnDeposit) -> Self {
+        Self {
+            zk_address: obj.zk_address.to_string(),
+            zk_token_index: obj.zk_token_index,
+            payment: (&obj.payment).into(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ExplorerMpnWithdraw {
+    pub zk_address: String,
+    pub zk_token_index: u64,
+    pub zk_fee_token_index: u64,
+    pub zk_nonce: u64,
+    pub zk_sig: String,
+    pub payment: ExplorerContractWithdraw,
+}
+
+impl From<&MpnWithdraw> for ExplorerMpnWithdraw {
+    fn from(obj: &MpnWithdraw) -> Self {
+        Self {
+            zk_address: obj.zk_address.to_string(),
+            zk_token_index: obj.zk_token_index,
+            zk_fee_token_index: obj.zk_fee_token_index,
+            zk_nonce: obj.zk_nonce,
+            zk_sig: "".into(), // TODO: Convert sig to hex
+            payment: (&obj.payment).into(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ExplorerMpnTransaction {
+    pub nonce: u64,
+    pub src_pub_key: String,
+    pub dst_pub_key: String,
+
+    pub src_token_index: u64,
+    pub src_fee_token_index: u64,
+    pub dst_token_index: u64,
+
+    pub amount: ExplorerMoney,
+    pub fee: ExplorerMoney,
+    pub sig: String,
+}
+
+impl From<&MpnTransaction> for ExplorerMpnTransaction {
+    fn from(obj: &MpnTransaction) -> Self {
+        Self {
+            nonce: obj.nonce,
+            src_pub_key: obj.src_pub_key.to_string(),
+            dst_pub_key: obj.dst_pub_key.to_string(),
+
+            src_token_index: obj.src_token_index,
+            src_fee_token_index: obj.src_fee_token_index,
+            dst_token_index: obj.dst_token_index,
+
+            amount: obj.amount.into(),
+            fee: obj.fee.into(),
+            sig: "".into(), // TODO: Convert sig to hex
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub enum ExplorerChainSourcedTx {
+    TransactionAndDelta(ExplorerTransaction),
+    MpnDeposit(ExplorerMpnDeposit),
+}
+
+impl From<&ChainSourcedTx> for ExplorerChainSourcedTx {
+    fn from(obj: &ChainSourcedTx) -> Self {
+        match obj {
+            ChainSourcedTx::TransactionAndDelta(tx_delta) => {
+                Self::TransactionAndDelta((&tx_delta.tx).into())
+            }
+            ChainSourcedTx::MpnDeposit(mpn_deposit) => Self::MpnDeposit(mpn_deposit.into()),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub enum ExplorerMpnSourcedTx {
+    MpnTransaction(ExplorerMpnTransaction),
+    MpnWithdraw(ExplorerMpnWithdraw),
+}
+
+impl From<&MpnSourcedTx> for ExplorerMpnSourcedTx {
+    fn from(obj: &MpnSourcedTx) -> Self {
+        match obj {
+            MpnSourcedTx::MpnTransaction(mpn_tx) => Self::MpnTransaction(mpn_tx.into()),
+            MpnSourcedTx::MpnWithdraw(mpn_withdraw) => Self::MpnWithdraw(mpn_withdraw.into()),
         }
     }
 }

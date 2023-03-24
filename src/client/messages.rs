@@ -1,4 +1,4 @@
-use crate::blockchain::ZkBlockchainPatch;
+use crate::blockchain::{TransactionStats, ZkBlockchainPatch};
 use crate::core::{
     Account, Address, Amount, Block, ChainSourcedTx, ContractId, Header, Money, MpnAddress,
     MpnDeposit, MpnSourcedTx, MpnWithdraw, Signature, Token, TransactionAndDelta, ValidatorProof,
@@ -9,7 +9,10 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use super::{
-    explorer::{ExplorerBlock, ExplorerMpnAccount, ExplorerStaker},
+    explorer::{
+        ExplorerBlock, ExplorerChainSourcedTx, ExplorerMpnAccount, ExplorerMpnSourcedTx,
+        ExplorerStaker,
+    },
     Peer, PeerAddress,
 };
 use serde::{Deserialize, Serialize};
@@ -46,6 +49,18 @@ pub struct GetAccountRequest {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct GetAccountResponse {
     pub account: Account,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct GetDelegationsRequest {
+    pub address: String,
+    pub top: usize,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct GetDelegationsResponse {
+    pub delegators: HashMap<String, Amount>,
+    pub delegatees: HashMap<String, Amount>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -412,7 +427,9 @@ pub struct GenerateBlockResponse {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct GetMpnWorkRequest {}
+pub struct GetMpnWorkRequest {
+    pub mpn_address: MpnAddress,
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct GetMpnWorkResponse {
@@ -422,10 +439,28 @@ pub struct GetMpnWorkResponse {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct PostMpnSolutionRequest {
     pub proofs: HashMap<usize, zk::groth16::Groth16Proof>,
-    pub reward_address: MpnAddress,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct PostMpnSolutionResponse {
     pub accepted: usize,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PostMpnWorkerRequest {
+    pub mpn_address: MpnAddress,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PostMpnWorkerResponse {
+    pub accepted: bool,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct GetExplorerMempoolRequest {}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct GetExplorerMempoolResponse {
+    pub chain_sourced: Vec<(ExplorerChainSourcedTx, TransactionStats)>,
+    pub mpn_sourced: Vec<(ExplorerMpnSourcedTx, TransactionStats)>,
 }

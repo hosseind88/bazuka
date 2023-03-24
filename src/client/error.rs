@@ -1,5 +1,6 @@
 use super::messages::InputError;
 use crate::blockchain::BlockchainError;
+use crate::mpn::MpnError;
 use crate::zk::ZkError;
 use thiserror::Error;
 
@@ -13,6 +14,8 @@ pub enum NodeError {
     NodeIsClientOnly,
     #[error("blockchain error happened: {0}")]
     BlockchainError(#[from] BlockchainError),
+    #[error("mpn error happened: {0}")]
+    MpnError(#[from] MpnError),
     #[error("server error happened: {0}")]
     ServerError(#[from] hyper::Error),
     #[error("client error happened: {0}")]
@@ -43,8 +46,6 @@ pub enum NodeError {
     InputError(#[from] InputError),
     #[error("signature (authorization) header is invalid")]
     InvalidSignatureHeader,
-    #[error("miner-token header is invalid")]
-    InvalidMinerTokenHeader,
     #[error("signature required on this message")]
     SignatureRequired,
     #[error("zk error: {0}")]
@@ -61,4 +62,6 @@ pub enum NodeError {
     BlockTimestampInFuture,
     #[error("your validator is not exposed on the internet")]
     ValidatorNotExposed,
+    #[error("request sender's ip address is unknown")]
+    SenderIpUnknown,
 }

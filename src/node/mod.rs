@@ -11,12 +11,13 @@ pub mod seeds;
 use crate::blockchain::{BlockAndPatch, Blockchain, Mempool};
 use crate::client::{
     messages::*, Limit, NodeError, NodeRequest, OutgoingSender, Peer, PeerAddress, Timestamp,
-    MINER_TOKEN_HEADER, NETWORK_HEADER, SIGNATURE_HEADER,
+    NETWORK_HEADER, SIGNATURE_HEADER,
 };
 use crate::common::*;
 use crate::crypto::ed25519;
 use crate::crypto::SignatureScheme;
 use crate::db::KvStore;
+use crate::mpn::MpnWorker;
 use crate::utils::local_timestamp;
 use crate::wallet::TxBuilder;
 use context::NodeContext;
@@ -63,17 +64,6 @@ pub struct NodeOptions {
     pub mpn_mempool_max_fetch: usize,
     pub max_block_time_difference: u32,
     pub automatic_block_generation: bool,
-}
-
-fn fetch_miner_token(req: &Request<Body>) -> Result<Option<String>, NodeError> {
-    if let Some(v) = req.headers().get(MINER_TOKEN_HEADER) {
-        return Ok(Some(
-            v.to_str()
-                .map_err(|_| NodeError::InvalidMinerTokenHeader)?
-                .into(),
-        ));
-    }
-    Ok(None)
 }
 
 fn fetch_signature(
@@ -149,27 +139,23 @@ async fn node_service<K: KvStore, B: Blockchain<K>>(
 ) -> Result<Response<Body>, NodeError> {
     let is_local = client.map(|c| c.ip().is_loopback()).unwrap_or(true);
     match async {
-        let is_miner = fetch_miner_token(&req)? == context.read().await.miner_token;
-
         let mut response = Response::builder()
             .header("Access-Control-Allow-Origin", "*")
             .body(Body::default())?;
 
         if let Some(client) = client {
-            if !is_miner {
-                let mut ctx = context.write().await;
-                let now = ctx.local_timestamp();
-                if ctx.peer_manager.is_ip_punished(now, client.ip()) {
-                    log::warn!("{} -> PeerManager dropped request!", client);
-                    *response.status_mut() = StatusCode::FORBIDDEN;
+            let mut ctx = context.write().await;
+            let now = ctx.local_timestamp();
+            if ctx.peer_manager.is_ip_punished(now, client.ip()) {
+                log::warn!("{} -> PeerManager dropped request!", client);
+                *response.status_mut() = StatusCode::FORBIDDEN;
+                return Ok(response);
+            }
+            if let Some(firewall) = &mut ctx.firewall {
+                if !firewall.incoming_permitted(client) {
+                    log::warn!("{} -> Firewall dropped request!", client);
+                    *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
                     return Ok(response);
-                }
-                if let Some(firewall) = &mut ctx.firewall {
-                    if !firewall.incoming_permitted(client) {
-                        log::warn!("{} -> Firewall dropped request!", client);
-                        *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-                        return Ok(response);
-                    }
                 }
             }
         }
@@ -207,7 +193,7 @@ async fn node_service<K: KvStore, B: Blockchain<K>>(
 
         let body = req.into_body();
 
-        if !is_local && !is_miner && network != context.read().await.network {
+        if !is_local && network != context.read().await.network {
             return Err(NodeError::WrongNetwork);
         }
 
@@ -258,6 +244,11 @@ async fn node_service<K: KvStore, B: Blockchain<K>>(
             (Method::GET, "/account") => {
                 *response.body_mut() = Body::from(serde_json::to_vec(
                     &api::get_account(Arc::clone(&context), serde_qs::from_str(&qs)?).await?,
+                )?);
+            }
+            (Method::GET, "/delegations") => {
+                *response.body_mut() = Body::from(serde_json::to_vec(
+                    &api::get_delegations(Arc::clone(&context), serde_qs::from_str(&qs)?).await?,
                 )?);
             }
             (Method::GET, "/balance") => {
@@ -371,6 +362,12 @@ async fn node_service<K: KvStore, B: Blockchain<K>>(
                         .await?,
                 )?);
             }
+            (Method::GET, "/explorer/mempool") => {
+                *response.body_mut() = Body::from(serde_json::to_vec(
+                    &api::get_explorer_mempool(Arc::clone(&context), serde_qs::from_str(&qs)?)
+                        .await?,
+                )?);
+            }
             (Method::GET, "/bincode/headers") => {
                 *response.body_mut() = Body::from(bincode::serialize(
                     &api::get_headers(Arc::clone(&context), bincode::deserialize(&body_bytes)?)
@@ -451,6 +448,12 @@ async fn node_service<K: KvStore, B: Blockchain<K>>(
                     .await?,
                 )?);
             }
+            (Method::POST, "/bincode/mpn/worker") => {
+                *response.body_mut() = Body::from(bincode::serialize(
+                    &api::post_mpn_worker(Arc::clone(&context), bincode::deserialize(&body_bytes)?)
+                        .await?,
+                )?);
+            }
             _ => {
                 *response.status_mut() = StatusCode::NOT_FOUND;
             }
@@ -501,16 +504,16 @@ pub async fn node_create<K: KvStore, B: Blockchain<K>>(
     bootstrap: Vec<PeerAddress>,
     blockchain: B,
     timestamp_offset: i32,
-    wallet: TxBuilder,
+    validator_wallet: TxBuilder,
+    user_wallet: TxBuilder,
     social_profiles: SocialProfiles,
     mut incoming: mpsc::UnboundedReceiver<NodeRequest>,
     outgoing: mpsc::UnboundedSender<NodeRequest>,
     firewall: Option<Firewall>,
-    miner_token: Option<String>,
+    mpn_workers: Vec<MpnWorker>,
 ) -> Result<(), NodeError> {
     let context = Arc::new(RwLock::new(NodeContext {
         _phantom: std::marker::PhantomData,
-        miner_token,
         firewall,
         opts: opts.clone(),
         network: network.into(),
@@ -520,13 +523,17 @@ pub async fn node_create<K: KvStore, B: Blockchain<K>>(
         outgoing: Arc::new(OutgoingSender {
             network: network.into(),
             chan: outgoing,
-            miner_token: None,
-            priv_key: wallet.get_priv_key(),
+            priv_key: validator_wallet.get_priv_key(),
         }),
+        mpn_workers: mpn_workers
+            .into_iter()
+            .map(|w| (w.mpn_address.clone(), w))
+            .collect(),
         mpn_work_pool: None,
         mempool: Mempool::new(blockchain.config().mpn_config.log4_tree_size),
         blockchain,
-        wallet,
+        validator_wallet,
+        user_wallet,
         peer_manager: PeerManager::new(
             address,
             bootstrap,

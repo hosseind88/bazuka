@@ -27,7 +27,6 @@ pub type Timestamp = u32;
 
 pub const SIGNATURE_HEADER: &str = "X-ZIESHA-SIGNATURE";
 pub const NETWORK_HEADER: &str = "X-ZIESHA-NETWORK-NAME";
-pub const MINER_TOKEN_HEADER: &str = "X-ZIESHA-MINER-TOKEN";
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerAddress(pub SocketAddr); // ip, port
@@ -70,7 +69,6 @@ pub struct OutgoingSender {
     pub priv_key: ed25519::PrivateKey,
     pub network: String,
     pub chan: mpsc::UnboundedSender<NodeRequest>,
-    pub miner_token: Option<String>,
 }
 
 #[derive(Default, Clone)]
@@ -238,7 +236,6 @@ impl BazukaClient {
         priv_key: ed25519::PrivateKey,
         peer: PeerAddress,
         network: String,
-        miner_token: Option<String>,
     ) -> (impl futures::Future<Output = Result<(), NodeError>>, Self) {
         let (sender_send, mut sender_recv) = mpsc::unbounded_channel::<NodeRequest>();
         let client_loop = async move {
@@ -262,7 +259,6 @@ impl BazukaClient {
                 sender: Arc::new(OutgoingSender {
                     priv_key,
                     network,
-                    miner_token,
                     chan: sender_send,
                 }),
             },
@@ -379,6 +375,23 @@ impl BazukaClient {
             .await
     }
 
+    pub async fn get_delegations(
+        &self,
+        address: Address,
+        top: usize,
+    ) -> Result<GetDelegationsResponse, NodeError> {
+        self.sender
+            .json_get::<GetDelegationsRequest, GetDelegationsResponse>(
+                format!("http://{}/delegations", self.peer),
+                GetDelegationsRequest {
+                    address: address.to_string(),
+                    top,
+                },
+                Limit::default(),
+            )
+            .await
+    }
+
     pub async fn get_balance(
         &self,
         address: Address,
@@ -454,11 +467,27 @@ impl BazukaClient {
             .await
     }
 
-    pub async fn get_mpn_works(&self) -> Result<GetMpnWorkResponse, NodeError> {
+    pub async fn get_mpn_works(
+        &self,
+        mpn_address: MpnAddress,
+    ) -> Result<GetMpnWorkResponse, NodeError> {
         self.sender
             .bincode_get::<GetMpnWorkRequest, GetMpnWorkResponse>(
                 format!("http://{}/bincode/mpn/work", self.peer),
-                GetMpnWorkRequest {},
+                GetMpnWorkRequest { mpn_address },
+                Limit::default(),
+            )
+            .await
+    }
+
+    pub async fn post_mpn_worker(
+        &self,
+        mpn_address: MpnAddress,
+    ) -> Result<PostMpnWorkerResponse, NodeError> {
+        self.sender
+            .bincode_post::<PostMpnWorkerRequest, PostMpnWorkerResponse>(
+                format!("http://{}/bincode/mpn/worker", self.peer),
+                PostMpnWorkerRequest { mpn_address },
                 Limit::default(),
             )
             .await
@@ -466,16 +495,12 @@ impl BazukaClient {
 
     pub async fn post_mpn_proof(
         &self,
-        reward_address: MpnAddress,
         proofs: HashMap<usize, Groth16Proof>,
     ) -> Result<PostMpnSolutionResponse, NodeError> {
         self.sender
             .bincode_post::<PostMpnSolutionRequest, PostMpnSolutionResponse>(
                 format!("http://{}/bincode/mpn/solution", self.peer),
-                PostMpnSolutionRequest {
-                    proofs,
-                    reward_address,
-                },
+                PostMpnSolutionRequest { proofs },
                 Limit::default(),
             )
             .await

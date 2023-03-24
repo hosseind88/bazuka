@@ -43,11 +43,12 @@ fn create_test_node(
         chain,
         opts.timestamp_offset,
         opts.wallet.clone(),
+        opts.wallet.clone(),
         SocialProfiles::default(),
         inc_recv,
         out_send,
         None,
-        None,
+        vec![],
     );
     (
         node,
@@ -59,7 +60,6 @@ fn create_test_node(
                     chan: inc_send,
                     network: "simulator".into(),
                     priv_key: opts.wallet.get_priv_key(),
-                    miner_token: None,
                 }),
             },
             outgoing: out_recv,
